@@ -1,0 +1,124 @@
+name: Build and Release
+
+on:
+  push:
+    branches:
+      - prod
+
+jobs:
+  build-and-release:
+    name: Build and Release macOS App
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get version from Git
+        id: version
+        run: |
+          # Use tag if exists, otherwise use short SHA
+          VERSION=$(git describe --tags --always --first-parent 2>/dev/null || echo "v0.0.1-$(git rev-parse --short HEAD)")
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Select Xcode version
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.app
+          xcodebuild -version
+
+      - name: Build app
+        run: |
+          xcodebuild \
+            -scheme skills-ui \
+            -configuration Release \
+            -derivedDataPath build \
+            -archivePath build/skills-ui.xcarchive \
+            archive \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Export app
+        run: |
+          # Create exports directory
+          mkdir -p export
+
+          # Copy the built app
+          cp -R build/Build/Products/Release/skills-ui.app export/
+
+          # Verify the app
+          ls -la export/
+
+      - name: Create DMG
+        run: |
+          # Create a temporary DMG
+          hdiutil create -volname "Skills UI" \
+            -srcfolder export/skills-ui.app \
+            -ov -format UDZO \
+            export/skills-ui.dmg
+
+          # Verify DMG was created
+          ls -lh export/
+
+      - name: Create ZIP archive
+        run: |
+          cd export
+          zip -r skills-ui.zip skills-ui.app
+          ls -lh
+
+      - name: Generate release notes
+        id: notes
+        run: |
+          cat > release_notes.md << 'EOF'
+          ## Skills UI for macOS
+
+          A native macOS app for managing Vercel Labs Skills — browse, install, and update reusable AI agent instruction sets.
+
+          ### Installation
+
+          1. Download `skills-ui.dmg` or `skills-ui.zip`
+          2. Open the DMG/ZIP and drag **Skills UI** to your Applications folder
+          3. Launch Skills UI (you may need to right-click and select "Open" on first launch)
+
+          ### Requirements
+
+          - macOS 15.0 (Sequoia) or later
+          - Node.js (for the Skills CLI)
+
+          ### What's Changed
+
+          EOF
+
+          # Add commit history since last tag
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            echo "### Commits since $LAST_TAG" >> release_notes.md
+            echo "" >> release_notes.md
+            git log $LAST_TAG..HEAD --pretty=format:"- %s (%h)" >> release_notes.md
+          else
+            echo "- Initial release" >> release_notes.md
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Skills UI ${{ steps.version.outputs.version }}
+          body_path: release_notes.md
+          draft: false
+          prerelease: false
+          files: |
+            export/skills-ui.dmg
+            export/skills-ui.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: skills-ui-macos
+          path: |
+            export/skills-ui.dmg
+            export/skills-ui.zip
+          retention-days: 30
