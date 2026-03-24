@@ -44,8 +44,8 @@ jobs:
           # Create exports directory
           mkdir -p export
 
-          # Copy the built app
-          cp -R build/Build/Products/Release/skills-ui.app export/
+          # Copy the built app from the archive
+          cp -R build/skills-ui.xcarchive/Products/Applications/skills-ui.app export/
 
           # Verify the app
           ls -la export/
