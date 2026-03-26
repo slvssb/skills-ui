@@ -8,142 +8,178 @@
 import SwiftUI
 
 struct UpdatesListView: View {
-    @Environment(SkillsStore.self) private var skillsStore
-    @Environment(ToastManager.self) private var toastManager
+    @EnvironmentObject private var skillsStore: SkillsStore
 
-    @State private var isUpdating = false
+    let onSelectSkill: (Skill) -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Header
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Available Updates")
-                        .font(.headline)
+        Group {
+            if skillsStore.isCheckingUpdates {
+                loadingView
+            } else if !skillsStore.skillsWithUpdates.isEmpty {
+                updatesListView
+            } else {
+                emptyStateView
+            }
+        }
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
 
-                    Text("\(skillsStore.updateCount) update\(skillsStore.updateCount == 1 ? "" : "s") available")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+    private var displayedSkills: [Skill] {
+        skillsStore.filteredSkillsWithUpdates.sorted { $0.name.localizedCompare($1.name) == .orderedAscending }
+    }
+
+    private var selectedSkillID: Binding<Skill.ID?> {
+        Binding(
+            get: { skillsStore.selectedSkill?.id },
+            set: { newValue in
+                guard let selectedSkill = displayedSkills.first(where: { $0.id == newValue }) else {
+                    skillsStore.selectedSkill = nil
+                    return
                 }
 
-                Spacer()
+                onSelectSkill(selectedSkill)
+            }
+        )
+    }
 
-                if skillsStore.hasUpdatesAvailable {
-                    Button {
-                        updateAllSkills()
-                    } label: {
-                        if isUpdating {
-                            ProgressView()
-                                .scaleEffect(0.7)
-                        } else {
-                            Text("Update All")
+    private var loadingView: some View {
+        VStack(spacing: 16) {
+            ProgressView()
+                .scaleEffect(1.5)
+            Text("Checking for updates...")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var updatesListView: some View {
+        VStack(spacing: 0) {
+            listHeader
+
+            List(selection: selectedSkillID) {
+                Section {
+                    ForEach(displayedSkills) { skill in
+                        UpdateRowView(skill: skill)
+                            .tag(skill.id)
+                    }
+                } footer: {
+                    Text("The skills CLI only supports updating all tracked skills at once.")
+                }
+
+                if !skillsStore.skippedUpdateSkills.isEmpty {
+                    Section("Cannot Be Checked Automatically") {
+                        ForEach(skillsStore.skippedUpdateSkills) { skipped in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(skipped.name)
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                                Text(skipped.reason)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text(skipped.updateCommand)
+                                    .font(.system(.caption, design: .monospaced))
+                                    .foregroundStyle(.tertiary)
+                                    .textSelection(.enabled)
+                            }
+                            .padding(.vertical, 4)
                         }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(isUpdating)
                 }
-            }
-            .padding()
 
-            Divider()
-
-            if skillsStore.hasUpdatesAvailable {
-                // List of skills with updates
-                List(skillsStore.skillsWithUpdates) { skill in
-                    UpdateRowView(skill: skill) {
-                        updateSkill(skill)
+                if !skillsStore.failedUpdateSkills.isEmpty {
+                    Section("Could Not Be Checked") {
+                        ForEach(skillsStore.failedUpdateSkills) { failed in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(failed.name)
+                                    .font(.subheadline)
+                                    .fontWeight(.medium)
+                                Text(failed.source)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.vertical, 4)
+                        }
                     }
                 }
-                .listStyle(.inset)
-            } else {
-                // Empty state
-                VStack(spacing: 12) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 48))
-                        .foregroundStyle(.green)
-
-                    Text("All Skills Up to Date")
-                        .font(.headline)
-
-                    Text("No updates are currently available for your installed skills.")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding()
             }
+            .listStyle(.plain)
         }
     }
 
-    private func updateAllSkills() {
-        isUpdating = true
-
-        Task {
-            do {
-                try await skillsStore.updateAllSkills()
-                toastManager.success("Updates Complete", message: "All skills have been updated.")
-            } catch {
-                toastManager.error("Update Failed", message: error.localizedDescription)
-            }
-
-            isUpdating = false
-        }
-    }
-
-    private func updateSkill(_ skill: Skill) {
-        Task {
-            do {
-                try await skillsStore.updateAllSkills()
-                toastManager.success("Updated", message: "\(skill.name) has been updated.")
-            } catch {
-                toastManager.error("Update Failed", message: error.localizedDescription)
-            }
-        }
-    }
-}
-
-// MARK: - Update Row View
-
-struct UpdateRowView: View {
-    let skill: Skill
-    let onUpdate: () -> Void
-
-    var body: some View {
-        HStack(spacing: 12) {
-            // Icon
-            Image(systemName: "arrow.triangle.2.circlepath")
-                .font(.title3)
-                .foregroundStyle(.orange)
-                .frame(width: 24)
-
+    private var listHeader: some View {
+        HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text(skill.name)
-                    .font(.subheadline)
-                    .fontWeight(.medium)
-
-                Text("Update available")
+                Text("Updates")
+                    .font(.headline)
+                Text("\(skillsStore.filteredSkillsWithUpdates.count) skill\(skillsStore.filteredSkillsWithUpdates.count == 1 ? "" : "s")")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Spacer()
-
-            Button("Update") {
-                onUpdate()
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
         }
-        .padding(.vertical, 4)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private var emptyStateView: some View {
+        VStack(spacing: 16) {
+            Image(systemName: skillsStore.hasCheckedForUpdates ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath")
+                .font(.system(size: 48))
+                .foregroundStyle(skillsStore.hasCheckedForUpdates ? .green : .secondary)
+
+            Text(emptyTitle)
+                .font(.title2)
+                .foregroundStyle(.secondary)
+
+            Text(emptyMessage)
+                .font(.subheadline)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 300)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding()
+    }
+
+    private var emptyTitle: String {
+        if !skillsStore.hasCheckedForUpdates {
+            return "No Update Check Yet"
+        }
+        return "All Skills Up to Date"
+    }
+
+    private var emptyMessage: String {
+        if !skillsStore.hasCheckedForUpdates {
+            return "Run Check Updates to compare your tracked skills against their sources."
+        }
+
+        if !skillsStore.skippedUpdateSkills.isEmpty {
+            return "\(skillsStore.skippedUpdateSkills.count) skill\(skillsStore.skippedUpdateSkills.count == 1 ? "" : "s") cannot be checked automatically."
+        }
+
+        return "No updates are currently available for your tracked skills."
     }
 }
 
-// MARK: - Preview
+struct UpdateRowView: View {
+    let skill: Skill
 
-#Preview {
-    UpdatesListView()
-        .environment(SkillsStore())
-        .environment(ToastManager())
-        .frame(width: 300, height: 400)
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(skill.name)
+                .font(.body)
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+
+            Text("Update")
+                .font(.caption2)
+                .foregroundStyle(.orange)
+        }
+        .padding(.vertical, 2)
+    }
 }

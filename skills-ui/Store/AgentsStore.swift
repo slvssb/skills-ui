@@ -6,27 +6,27 @@
 //
 
 import Foundation
+import Combine
 import SwiftUI
 
 /// Store for AI coding agents
-@Observable
-final class AgentsStore {
+final class AgentsStore: ObservableObject {
     // MARK: - State
 
     /// All known agents
-    var allAgents: [Agent] = Agent.allAgents
+    @Published var allAgents: [Agent] = Agent.allAgents
 
     /// Detected agents on this system
-    var detectedAgents: [Agent] = []
+    @Published var detectedAgents: [Agent] = []
 
     /// Selected agents for install operations
-    var selectedAgentIds: Set<String> = []
+    @Published var selectedAgentIds: Set<String> = []
 
     /// Loading state
-    var isLoading: Bool = false
+    @Published var isLoading: Bool = false
 
     /// Error state
-    var error: Error?
+    @Published var error: Error?
 
     // MARK: - Computed Properties
 

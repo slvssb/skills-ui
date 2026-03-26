@@ -6,68 +6,56 @@
 //
 
 import Foundation
+import Combine
 import SwiftUI
 
 /// Main store for skills data
-@Observable
-final class SkillsStore {
+final class SkillsStore: ObservableObject {
     // MARK: - State
 
-    /// All available skills (from registry)
-    var availableSkills: [Skill] = []
-
     /// Installed skills (from skills list)
-    var installedSkills: [Skill] = []
-
-    /// Skills with updates available
-    var skillsWithUpdates: [Skill] = []
+    @Published var installedSkills: [Skill] = []
 
     /// Currently selected skill for detail view
-    var selectedSkill: Skill?
+    @Published var selectedSkill: Skill?
 
-    /// Search query
-    var searchQuery: String = ""
+    /// Skills with updates available according to `skills check`
+    @Published var skillsWithUpdates: [Skill] = []
+
+    /// Skills that the CLI cannot check automatically
+    @Published var skippedUpdateSkills: [SkillUpdateSkipped] = []
+
+    /// Skills that failed update checks
+    @Published var failedUpdateSkills: [SkillUpdateError] = []
 
     /// Loading states
-    var isLoadingAvailable: Bool = false
-    var isLoadingInstalled: Bool = false
-    var isCheckingUpdates: Bool = false
+    @Published var isLoadingInstalled: Bool = false
+    @Published var isCheckingUpdates: Bool = false
+
+    /// Whether an explicit update check has completed in this session
+    @Published var hasCheckedForUpdates: Bool = false
 
     /// Error state
-    var error: Error?
+    @Published var error: Error?
 
-    // MARK: - Computed Properties
+    @Published var searchQuery: String = ""
 
-    /// Filtered available skills based on search
-    var filteredAvailableSkills: [Skill] {
-        if searchQuery.isEmpty {
-            return availableSkills
-        }
-        return availableSkills.filter { skill in
-            skill.name.localizedCaseInsensitiveContains(searchQuery) ||
-            skill.description.localizedCaseInsensitiveContains(searchQuery)
-        }
+    // MARK: - Computed
+
+    var hasUpdatesAvailable: Bool {
+        !skillsWithUpdates.isEmpty
     }
 
-    /// Filtered installed skills based on search
-    var filteredInstalledSkills: [Skill] {
-        if searchQuery.isEmpty {
-            return installedSkills
-        }
-        return installedSkills.filter { skill in
-            skill.name.localizedCaseInsensitiveContains(searchQuery) ||
-            skill.description.localizedCaseInsensitiveContains(searchQuery)
-        }
-    }
-
-    /// Number of skills with updates
     var updateCount: Int {
         skillsWithUpdates.count
     }
 
-    /// Whether any updates are available
-    var hasUpdatesAvailable: Bool {
-        !skillsWithUpdates.isEmpty
+    var filteredInstalledSkills: [Skill] {
+        filter(skills: installedSkills)
+    }
+
+    var filteredSkillsWithUpdates: [Skill] {
+        filter(skills: skillsWithUpdates)
     }
 
     // MARK: - Services
@@ -75,28 +63,6 @@ final class SkillsStore {
     private let cliService = SkillsCLIService.shared
 
     // MARK: - Actions
-
-    /// Load available skills from registry
-    @MainActor
-    func loadAvailableSkills() async {
-        guard !isLoadingAvailable else { return }
-
-        isLoadingAvailable = true
-        error = nil
-
-        do {
-            let result = try await cliService.findSkills(query: nil)
-            if result.succeeded {
-                availableSkills = SkillsCLIParser.parseFindOutput(result.standardOutput)
-            } else {
-                error = result.error
-            }
-        } catch {
-            self.error = error
-        }
-
-        isLoadingAvailable = false
-    }
 
     /// Load installed skills
     @MainActor
@@ -110,6 +76,8 @@ final class SkillsStore {
             let result = try await cliService.listSkills(scope: scope)
             if result.succeeded {
                 installedSkills = SkillsCLIParser.parseListOutput(result.standardOutput)
+                applyUpdateMarkers()
+                syncSelectedSkill()
             } else {
                 error = result.error
             }
@@ -120,101 +88,41 @@ final class SkillsStore {
         isLoadingInstalled = false
     }
 
-    /// Check for skill updates
+    /// Clear error
+    func clearError() {
+        error = nil
+    }
+
+    /// Check for skill updates using `npx skills check`
     @MainActor
     func checkForUpdates() async {
         guard !isCheckingUpdates else { return }
 
         isCheckingUpdates = true
+        error = nil
 
         do {
             let result = try await cliService.checkUpdates()
             if result.succeeded {
-                let updates = SkillsCLIParser.parseUpdateCheckOutput(result.standardOutput)
-                // Update skillsWithUpdates based on parsed data
-                skillsWithUpdates = installedSkills.filter { installed in
-                    updates.contains { $0.name == installed.name }
-                }
-            }
-        } catch {
-            // Silently fail update checks
-            print("Update check failed: \(error)")
-        }
-
-        isCheckingUpdates = false
-    }
-
-    /// Search for skills
-    @MainActor
-    func search(query: String) async {
-        searchQuery = query
-
-        if query.isEmpty {
-            return
-        }
-
-        isLoadingAvailable = true
-
-        do {
-            let result = try await cliService.findSkills(query: query)
-            if result.succeeded {
-                availableSkills = SkillsCLIParser.parseFindOutput(result.standardOutput)
+                let summary = SkillsCLIParser.parseUpdateCheckOutput(result.standardOutput)
+                skippedUpdateSkills = summary.skipped
+                failedUpdateSkills = summary.errors
+                hasCheckedForUpdates = true
+                applyUpdateMarkers(using: Set(summary.updates.map(\.name)))
+                syncSelectedSkill()
+            } else {
+                error = result.error
             }
         } catch {
             self.error = error
         }
 
-        isLoadingAvailable = false
+        isCheckingUpdates = false
     }
 
-    /// Install a skill
+    /// Update all tracked skills using `npx skills update`
     @MainActor
-    func installSkill(_ skill: Skill, options: InstallOptions) async throws {
-        var installOptions = options
-        installOptions.skillNames = [skill.name]
-
-        let result = try await cliService.installSkills(options: installOptions)
-
-        if result.failed {
-            throw result.error ?? CLIError(
-                exitCode: result.exitCode,
-                message: "Installation failed",
-                command: "skills",
-                arguments: []
-            )
-        }
-
-        // Refresh installed skills
-        await loadInstalledSkills()
-
-        // Add to recently installed
-        SettingsStore.shared.addRecentlyInstalledSkill(skill)
-    }
-
-    /// Remove a skill
-    @MainActor
-    func removeSkill(_ skill: Skill, options: RemoveOptions) async throws {
-        var removeOptions = options
-        removeOptions.skillNames = [skill.name]
-
-        let result = try await cliService.removeSkills(options: removeOptions)
-
-        if result.failed {
-            throw result.error ?? CLIError(
-                exitCode: result.exitCode,
-                message: "Removal failed",
-                command: "skills",
-                arguments: []
-            )
-        }
-
-        // Refresh installed skills
-        await loadInstalledSkills()
-    }
-
-    /// Update all skills
-    @MainActor
-    func updateAllSkills() async throws {
+    func updateAllSkills(scope: InstallScope = .project) async throws {
         let result = try await cliService.updateSkills()
 
         if result.failed {
@@ -222,44 +130,59 @@ final class SkillsStore {
                 exitCode: result.exitCode,
                 message: "Update failed",
                 command: "skills",
-                arguments: []
+                arguments: ["update"]
             )
         }
 
-        // Refresh data
-        await loadInstalledSkills()
+        await loadInstalledSkills(scope: scope)
         await checkForUpdates()
     }
 
-    /// Load skills from a specific source
-    @MainActor
-    func loadSkillsFromSource(_ source: SkillSource) async throws -> [Skill] {
-        let result = try await cliService.listAvailableSkills(source: source)
+    // MARK: - Private Helpers
 
-        if result.failed {
-            throw result.error ?? CLIError(
-                exitCode: result.exitCode,
-                message: "Failed to list skills from source",
-                command: "skills",
-                arguments: []
-            )
+    private func normalizedSkillName(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private func filter(skills: [Skill]) -> [Skill] {
+        let trimmedQuery = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else { return skills }
+
+        return skills.filter { skill in
+            skill.name.localizedCaseInsensitiveContains(trimmedQuery)
+                || (skill.markdownContent?.localizedCaseInsensitiveContains(trimmedQuery) ?? false)
+                || skill.installedAgents.contains(where: { $0.localizedCaseInsensitiveContains(trimmedQuery) })
+        }
+    }
+
+    private func applyUpdateMarkers(using updateNames: Set<String>? = nil) {
+        let normalizedUpdates = updateNames ?? Set(skillsWithUpdates.map { normalizedSkillName($0.name) })
+
+        installedSkills = installedSkills.map { skill in
+            let hasUpdate = normalizedUpdates.contains(normalizedSkillName(skill.name))
+            var updatedSkill = skill
+            updatedSkill.installStatus = skill.installStatus.mapValues { status in
+                switch (status, hasUpdate) {
+                case (.installed, true):
+                    return .updateAvailable(currentVersion: nil, newVersion: nil)
+                case (.updateAvailable, false):
+                    return .installed(version: nil)
+                default:
+                    return status
+                }
+            }
+            return updatedSkill
         }
 
-        return SkillsCLIParser.parseAvailableSkillsOutput(result.standardOutput, source: source)
+        skillsWithUpdates = installedSkills.filter { normalizedUpdates.contains(normalizedSkillName($0.name)) }
     }
 
-    /// Clear error
-    func clearError() {
-        error = nil
-    }
+    private func syncSelectedSkill() {
+        guard let selectedSkill else { return }
 
-    /// Refresh all data
-    @MainActor
-    func refresh() async {
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { await self.loadAvailableSkills() }
-            group.addTask { await self.loadInstalledSkills() }
-            group.addTask { await self.checkForUpdates() }
+        let selectedName = normalizedSkillName(selectedSkill.name)
+        self.selectedSkill = installedSkills.first {
+            normalizedSkillName($0.name) == selectedName
         }
     }
 }

@@ -36,6 +36,7 @@ struct Skill: Codable, Identifiable, Hashable, Sendable {
     let name: String
     let description: String
     let source: SkillSource
+    let installedPath: String?
     var installStatus: [String: SkillInstallStatus]  // Agent ID -> Status
     let markdownContent: String?
     let metadata: SkillMetadata?
@@ -45,6 +46,7 @@ struct Skill: Codable, Identifiable, Hashable, Sendable {
         name: String,
         description: String,
         source: SkillSource,
+        installedPath: String? = nil,
         installStatus: [String: SkillInstallStatus] = [:],
         markdownContent: String? = nil,
         metadata: SkillMetadata? = nil
@@ -53,6 +55,7 @@ struct Skill: Codable, Identifiable, Hashable, Sendable {
         self.name = name
         self.description = description
         self.source = source
+        self.installedPath = installedPath
         self.installStatus = installStatus
         self.markdownContent = markdownContent
         self.metadata = metadata
@@ -76,6 +79,30 @@ struct Skill: Codable, Identifiable, Hashable, Sendable {
     /// Get agents where update is available
     var agentsWithUpdates: [String] {
         installStatus.filter { $0.value.needsUpdate }.map { $0.key }
+    }
+
+    /// Resolve the on-disk SKILL.md path for installed skills.
+    var resolvedSkillFilePath: String? {
+        guard let installedPath else { return nil }
+
+        let url = URL(fileURLWithPath: installedPath)
+        if url.lastPathComponent == "SKILL.md" {
+            return installedPath
+        }
+
+        return url.appendingPathComponent("SKILL.md").path
+    }
+
+    /// Compact location label for list rows.
+    var installedLocationLabel: String {
+        guard let installedPath else { return "Installed" }
+
+        let url = URL(fileURLWithPath: installedPath)
+        if url.lastPathComponent == "SKILL.md" {
+            return url.deletingLastPathComponent().lastPathComponent
+        }
+
+        return url.lastPathComponent.isEmpty ? installedPath : url.lastPathComponent
     }
 
     /// Create a sample skill for previews

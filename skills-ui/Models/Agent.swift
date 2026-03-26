@@ -67,6 +67,17 @@ struct Agent: Codable, Identifiable, Hashable, Sendable {
         allAgents.first { $0.id == id }
     }
 
+    /// Get agent by display name from the skills CLI output
+    static func byName(_ name: String) -> Agent? {
+        let normalizedName = name
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        return allAgents.first {
+            $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedName
+        }
+    }
+
     /// Expand tilde in path
     func expandPath(_ path: String) -> String {
         (path as NSString).expandingTildeInPath

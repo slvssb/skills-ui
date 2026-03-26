@@ -6,39 +6,39 @@
 //
 
 import Foundation
+import Combine
 import SwiftUI
 
 /// Store for app settings and preferences
-@Observable
-final class SettingsStore {
+final class SettingsStore: ObservableObject {
     // MARK: - State
 
     /// Current project path (nil = global scope)
-    var currentProjectPath: URL?
+    @Published var currentProjectPath: URL?
 
     /// Recent projects
-    var recentProjects: [URL] = []
+    @Published var recentProjects: [URL] = []
 
     /// Recently installed skills (stored as skill names)
-    var recentlyInstalledSkills: [String] = []
+    @Published var recentlyInstalledSkills: [String] = []
 
     /// Default installation scope
-    var defaultScope: InstallScope = .project
+    @Published var defaultScope: InstallScope = .project
 
     /// Default installation method
-    var defaultMethod: InstallMethod = .symlink
+    @Published var defaultMethod: InstallMethod = .symlink
 
     /// Show internal skills
-    var showInternalSkills: Bool = false
+    @Published var showInternalSkills: Bool = false
 
     /// Background update check interval (hours)
-    var updateCheckInterval: Double = 6.0
+    @Published var updateCheckInterval: Double = 6.0
 
     /// Last update check time
-    var lastUpdateCheck: Date?
+    @Published var lastUpdateCheck: Date?
 
     /// Whether the CLI is available
-    var isCLIAvailable: Bool = false
+    @Published var isCLIAvailable: Bool = false
 
     // MARK: - UserDefaults Keys
 
