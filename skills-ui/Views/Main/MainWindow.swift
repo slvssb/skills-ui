@@ -8,233 +8,198 @@
 import SwiftUI
 
 struct MainWindow: View {
-    @Environment(SkillsStore.self) private var skillsStore
-    @Environment(AgentsStore.self) private var agentsStore
-    @Environment(SettingsStore.self) private var settingsStore
-    @Environment(ToastManager.self) private var toastManager
+    @EnvironmentObject private var skillsStore: SkillsStore
+    @EnvironmentObject private var settingsStore: SettingsStore
 
-    @State private var searchText = ""
-    @State private var showingAddSkillSheet = false
-    @State private var showingInstallSheet = false
-    @State private var skillToInstall: Skill?
+    @State private var isRefreshing = false
+    @State private var selectedSection: MainSection = .installed
+    @State private var isUpdatingAll = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            SidebarView()
-                .navigationSplitViewColumnWidth(min: 200, ideal: 220)
+            NavigationSidebarView(selectedSection: $selectedSection)
+                .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 240)
+        } content: {
+            contentPane
+                .navigationSplitViewColumnWidth(min: 260, ideal: 320, max: 380)
         } detail: {
-            VStack(spacing: 0) {
-                // Toolbar
-                toolbarView
-
-                Divider()
-
-                // Main content
-                HSplitView {
-                    // Skills list
-                    SkillsListView(
-                        onSelectSkill: { skill in
-                            skillsStore.selectedSkill = skill
-                        },
-                        onInstallSkill: { skill in
-                            skillToInstall = skill
-                            showingInstallSheet = true
+            if let selectedSkill = skillsStore.selectedSkill {
+                SkillDetailView(
+                    skill: selectedSkill,
+                    scopeLabel: settingsStore.scopeDisplayName,
+                    canUpdateAll: skillsStore.hasUpdatesAvailable,
+                    onCheckUpdates: {
+                        Task {
+                            await skillsStore.checkForUpdates()
                         }
-                    )
-                    .frame(minWidth: 300, idealWidth: 400)
-
-                    // Detail view
-                    if let selectedSkill = skillsStore.selectedSkill {
-                        SkillDetailView(skill: selectedSkill)
-                            .frame(minWidth: 300, idealWidth: 400)
-                    } else {
-                        EmptyDetailView()
-                            .frame(minWidth: 300, idealWidth: 400)
+                    },
+                    onUpdateAll: {
+                        Task {
+                            await updateAllSkills()
+                        }
                     }
-                }
+                )
+            } else {
+                EmptyDetailView()
             }
         }
-        .navigationTitle(settingsStore.scopeDisplayName)
+        .navigationSplitViewStyle(.balanced)
+        .navigationTitle(selectedSection.title)
         .toolbar {
-            ToolbarItemGroup {
-                // Scope picker
-                Menu {
-                    Button("Global") {
-                        settingsStore.useGlobalScope()
-                        Task { await skillsStore.loadInstalledSkills(scope: .global) }
-                    }
-                    Divider()
-                    Button("Choose Project...") {
-                        NotificationCenter.default.post(name: .showProjectPicker, object: nil)
-                    }
-                    if !settingsStore.recentProjects.isEmpty {
-                        Divider()
-                        ForEach(settingsStore.recentProjects, id: \.self) { url in
-                            Button(url.lastPathComponent) {
-                                settingsStore.setCurrentProject(url)
-                                Task { await skillsStore.loadInstalledSkills(scope: .project) }
-                            }
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "folder")
-                        Text(settingsStore.scopeDisplayName)
-                    }
-                }
+            ToolbarItem(placement: .primaryAction) {
+                refreshButton
+            }
 
-                // Search field
-                ToolbarSearchField(text: $searchText) {
-                    Task {
-                        await skillsStore.search(query: searchText)
-                    }
-                }
+            ToolbarItem(placement: .primaryAction) {
+                checkUpdatesButton
+            }
 
-                // Refresh button
-                Button {
-                    Task {
-                        await skillsStore.refresh()
-                        toastManager.success("Refreshed", message: "Skills data has been updated")
-                    }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .help("Refresh skills")
-
-                // Updates button
-                if skillsStore.hasUpdatesAvailable {
-                    Button {
-                        NotificationCenter.default.post(name: .showUpdatesAvailable, object: nil)
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.clockwise.circle.fill")
-                            Text("\(skillsStore.updateCount)")
-                        }
-                        .foregroundStyle(.orange)
-                    }
-                    .help("Updates available")
+            if selectedSection == .updates {
+                ToolbarItem(placement: .primaryAction) {
+                    updateAllButton
                 }
             }
         }
-        .sheet(isPresented: $showingAddSkillSheet) {
-            AddSkillSheet()
-        }
-        .sheet(item: $skillToInstall) { skill in
-            InstallSheet(skill: skill) {
-                showingInstallSheet = false
-                skillToInstall = nil
-            }
-        }
-        .toast()
+        .searchable(text: $skillsStore.searchQuery, placement: .toolbar, prompt: "Search skills...")
         .onAppear {
             Task {
-                await skillsStore.refresh()
+                await reloadInstalledSkills()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: .showAddSkillSheet)) { _ in
-            showingAddSkillSheet = true
+        .onChange(of: selectedSection) { _, _ in
+            syncSelectedSkill()
         }
-        .onReceive(NotificationCenter.default.publisher(for: .showUpdatesAvailable)) { _ in
-            // Could show an updates sheet
+        .onChange(of: skillsStore.searchQuery) { _, _ in
+            syncSelectedSkill()
         }
     }
 
-    // MARK: - Toolbar View
-
-    private var toolbarView: some View {
-        HStack {
-            // Left side info
-            HStack(spacing: 8) {
-                if skillsStore.isLoadingInstalled || skillsStore.isLoadingAvailable {
-                    ProgressView()
-                        .scaleEffect(0.7)
-                }
-
-                Text("\(skillsStore.filteredInstalledSkills.count) installed")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+    private var refreshButton: some View {
+        Button {
+            Task {
+                await reloadInstalledSkills()
             }
-
-            Spacer()
-
-            // Right side actions
-            HStack(spacing: 12) {
-                Button {
-                    showingAddSkillSheet = true
-                } label: {
-                    Label("Add Skill", systemImage: "plus")
-                }
-
-                if skillsStore.hasUpdatesAvailable {
-                    Button("Update All") {
-                        Task {
-                            do {
-                                try await skillsStore.updateAllSkills()
-                                toastManager.success("Skills Updated")
-                            } catch {
-                                toastManager.error("Update Failed", message: error.localizedDescription)
-                            }
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
+        } label: {
+            if isRefreshing || skillsStore.isLoadingInstalled {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Image(systemName: "arrow.clockwise")
             }
         }
-        .padding(.horizontal)
-        .padding(.vertical, 8)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .help("Refresh")
+    }
+
+    private var checkUpdatesButton: some View {
+        Button {
+            Task {
+                await skillsStore.checkForUpdates()
+            }
+        } label: {
+            if skillsStore.isCheckingUpdates {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Image(systemName: "arrow.triangle.2.circlepath")
+            }
+        }
+        .help("Check Updates")
+    }
+
+    private var updateAllButton: some View {
+        Button {
+            Task {
+                await updateAllSkills()
+            }
+        } label: {
+            if isUpdatingAll {
+                ProgressView()
+                    .controlSize(.small)
+            } else {
+                Image(systemName: "arrow.down.circle")
+            }
+        }
+        .disabled(isUpdatingAll || skillsStore.isCheckingUpdates || !skillsStore.hasUpdatesAvailable)
+        .help("Update All")
+    }
+
+    @ViewBuilder
+    private var contentPane: some View {
+        switch selectedSection {
+        case .installed:
+            SkillsListView { skill in
+                skillsStore.selectedSkill = skill
+            }
+        case .updates:
+            UpdatesListView { skill in
+                skillsStore.selectedSkill = skill
+            }
+        }
+    }
+
+    private var currentScope: InstallScope {
+        settingsStore.isGlobalScope ? .global : .project
+    }
+
+    private var visibleSkills: [Skill] {
+        switch selectedSection {
+        case .installed:
+            return skillsStore.filteredInstalledSkills
+        case .updates:
+            return skillsStore.filteredSkillsWithUpdates
+        }
+    }
+
+    @MainActor
+    private func reloadInstalledSkills() async {
+        isRefreshing = true
+        await skillsStore.loadInstalledSkills(scope: currentScope)
+        syncSelectedSkill()
+        isRefreshing = false
+    }
+
+    @MainActor
+    private func updateAllSkills() async {
+        isUpdatingAll = true
+        defer { isUpdatingAll = false }
+
+        do {
+            try await skillsStore.updateAllSkills(scope: currentScope)
+            selectedSection = .updates
+            syncSelectedSkill()
+        } catch {
+            skillsStore.error = error
+        }
+    }
+
+    private func syncSelectedSkill() {
+        guard let selectedSkill = skillsStore.selectedSkill else {
+            return
+        }
+
+        let normalizedSelectedName = selectedSkill.name
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+
+        skillsStore.selectedSkill = visibleSkills.first {
+            $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == normalizedSelectedName
+        }
     }
 }
 
-// MARK: - Toolbar Search Field
+enum MainSection: String, CaseIterable, Identifiable {
+    case installed
+    case updates
 
-struct ToolbarSearchField: NSViewRepresentable {
-    @Binding var text: String
-    var onSubmit: () -> Void
+    var id: String { rawValue }
 
-    func makeNSView(context: Context) -> NSSearchField {
-        let searchField = NSSearchField()
-        searchField.delegate = context.coordinator
-        searchField.bezelStyle = .roundedBezel
-        searchField.isBezeled = true
-        searchField.drawsBackground = true
-        searchField.placeholderString = "Search skills..."
-        searchField.focusRingType = .exterior
-        return searchField
-    }
-
-    func updateNSView(_ nsView: NSSearchField, context: Context) {
-        nsView.stringValue = text
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(self)
-    }
-
-    class Coordinator: NSObject, NSSearchFieldDelegate {
-        let parent: ToolbarSearchField
-
-        init(_ parent: ToolbarSearchField) {
-            self.parent = parent
-        }
-
-        func controlTextDidChange(_ obj: Notification) {
-            guard let searchField = obj.object as? NSSearchField else { return }
-            parent.text = searchField.stringValue
-        }
-
-        func controlTextDidEndEditing(_ obj: Notification) {
-            parent.onSubmit()
-        }
-
-        func searchFieldDidStartSearching(_ sender: NSSearchField) {
-            // Search started
-        }
-
-        func searchFieldDidEndSearching(_ sender: NSSearchField) {
-            parent.text = ""
-            parent.onSubmit()
+    var title: String {
+        switch self {
+        case .installed:
+            return "All Skills"
+        case .updates:
+            return "Updates"
         }
     }
 }
@@ -243,33 +208,17 @@ struct ToolbarSearchField: NSViewRepresentable {
 
 struct EmptyDetailView: View {
     var body: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "rectangle.stack.badge.plus")
-                .font(.system(size: 48))
-                .foregroundStyle(.secondary)
-
-            Text("Select a Skill")
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Select a skill")
                 .font(.title2)
-                .foregroundStyle(.secondary)
+                .fontWeight(.semibold)
 
-            Text("Choose a skill from the list to view details and installation options")
+            Text("Choose a skill to inspect its status, actions, and source.")
                 .font(.subheadline)
-                .foregroundStyle(.tertiary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 250)
+                .foregroundStyle(.secondary)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .padding(24)
         .background(Color(nsColor: .windowBackgroundColor))
     }
-}
-
-// MARK: - Preview
-
-#Preview {
-    MainWindow()
-        .environment(SkillsStore())
-        .environment(AgentsStore.shared)
-        .environment(SettingsStore.shared)
-        .environment(ToastManager())
-        .frame(width: 1000, height: 700)
 }
